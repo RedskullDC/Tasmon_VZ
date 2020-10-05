@@ -1,23 +1,22 @@
 ﻿
 ; Specify target machine
 
-;#DEFINE TRS80
-#DEFINE VZ
+;#DEFINE TRS80		; Standard TRS-80 Model 1 64x16 screen @ 3C00h-3FFFh
+#DEFINE VZ		; Stock Standard VZ200/300/LASER 32x16 screen @ 7000h-71FFh
+;#DEFINE VZ6432		; 64x32 FPGA version
 
 ; Routines which exist in both TRS-80 Level2 and VZ200/300:
 
 Delay			.equ 0060H	; General purpose delay routine. count down BC register. Not called in VZ??
 ROM_KBD_Routine		.equ 0013H	; Reads KBD via DCB
 DRIVER_EXIT		.equ 03DDH	; restore regs after DCB call, then return to caller
+ROM_PRT_DRIVER		.equ 058DH
 
-;-------------------------------------------------------------------
 
-; Routines in both, but relocated
+;==============================================================================================================================================
 
 #IFDEF TRS80
 
-.org 6000h
-								
 Cassette_Off		.equ 01F8H					; no equivalent		; commented out by IFDEF on VZ
 Select_Cass_Unit	.equ 0212H					; no equivalent		; commented out by IFDEF on VZ
 CASS_READ_BYTE		.equ 0235H					; 3775h
@@ -25,7 +24,16 @@ CASS_WRITE_BYTE		.equ 0264H					; 3511h
 Cass_Find_Sync		.equ 0296H					; 3B68h
 Blink_Asterisk		.equ 022CH					; no equivalent		; commented out by IFDEF on VZ
 Write_Leader_Sync	.equ 0287H					; 3558h
-									; 
+
+sub_3FE			.equ 03FEH					; jumps midway into kbd routine :o(
+
+CONVERT_LCASE		.equ 047BH
+OUTPUT_CHAR		.equ 047DH
+CHECK_GRAPHIC		.equ 04A6H
+PROCESS_CONTROL		.equ 0506H					; process screen handling, control chars. return via $480
+
+KBD_ROW_01		.equ 3801H					; keyboard locations. Keyboard totally different in VZ/LASER
+
 SCREEN_START		.equ 3C00H					; 7000h			; TRS-80 Screen is 1024 bytes 
 RAM_START		.equ 4000H					; 7200h			; First location after screen mem. ($7200 on a stock VZ, $7800 on 64x32 VZ)
 LINE_LEN		.equ 64						; 32			; 64 chars long on TRS-80, or 64x32 VZ
@@ -34,14 +42,22 @@ SCREEN_LINES		.equ (RAM_START - SCREEN_START)/LINE_LEN	; 32 on a 64x32 screen on
 
 SCREEN_OVERFLOW		.equ ((RAM_START >> 8) & 0FFH)			; High byte of RAM START. Set to $72 on stock VZ
 
+PRINT_CONTROL		.equ 37E8h
+RST28_Vector		.equ 400CH					; 780Ch			; Not used in VZ?
+L2_VIDEO_DCB		.equ 401DH					; Video DCB ignored by VZ.  *CAREFUL* here
+NEXT_CHAR_ADD_L2	.equ 4020H	; 7820h				; Video DCB ignored by VZ.  *CAREFUL* here
 L2_PRINTER_DCB		.equ 4025H					; 7825h
-PRINT_CONTROL		.equ 37E8h					; Port 00h              ; Call 5C4h to test printer
+Display_Control		.equ 403DH					; 32/64 chars per line
+DISK_MEM_SIZE		.equ 4049H					; Model1 disk system HIGH_MEM  (Level2 uses 40B1h)
+
 #ENDIF
 
+;==============================================================================================================================================
 
 #IFDEF VZ
 
-.org 8000h
+VZ_CLS			.equ 01C9h
+CONSOLE_OUT_PRESERVE	.equ 033Ah					; general char out routine.
 
 ;Cassette_Off		.equ no equivalent				; commented out by IFDEF on VZ
 ;Select_Cass_Unit	.equ no equivalent				; commented out by IFDEF on VZ
@@ -51,97 +67,128 @@ Cass_Find_Sync		.equ 3B68h
 ;Blink_Asterisk		.equ no equivalent				; commented out by IFDEF on VZ
 Write_Leader_Sync	.equ 3558h
 
+LATCH6800_COPY		.equ 783Bh					; copy of the 6800h current control latch value
+CONTROL_LATCH		.equ 6800h
+
+SCREEN_START		.equ 7000h					; TRS-80 Screen is 1024 bytes, Stock VZ = 512, 64x32 VZ = 2048
+RAM_START		.equ 7200h					; First location after screen mem. ($7200 on a stock VZ, $7800 on 64x32 VZ)
+LINE_LEN		.equ 32						; 32 on Stock VZ. 64 chars long on TRS-80, or 64x32 VZ
+SCREEN_LEN		.equ (RAM_START - SCREEN_START)			; ($200 on stock VZ, $400 long on a Model 1, $800 on 64x32 VZ300)
+SCREEN_LINES		.equ (RAM_START - SCREEN_START)/LINE_LEN	; 32 on a 64x32 screen on Laser310_FPGA, 16 on Stock VZ/TRS-80
+SCREEN_OVERFLOW		.equ ((RAM_START >> 8) & 0FFH)			; High byte of RAM START. Set to $72 on stock VZ
+
+PRINTER_STATUS		.equ 05C4h					; PORT 00h   Call 5C4h to test printer on VZ
+;NEXT_CHAR_ADD_L2	.equ 7820h					; Video DCB ignored by VZ.  *CAREFUL* here
+L2_PRINTER_DCB		.equ 7825h
+
+DISK_MEM_SIZE		.equ 78B1h					; VZ uses same mem location if DOS is running or not
+
+CHECK_BREAK		.equ 3AF8h					; rom routine to check break. C set if found, else clear
+#ENDIF
+
+;==============================================================================================================================================
+
+#IFDEF VZ6432
+
+VZ_CLS			.equ 01C9h
+CONSOLE_OUT_PRESERVE	.equ 033Ah					; general char out routine.
+
+;Cassette_Off		.equ no equivalent				; commented out by IFDEF on VZ
+;Select_Cass_Unit	.equ no equivalent				; commented out by IFDEF on VZ
+CASS_READ_BYTE		.equ 3775h
+CASS_WRITE_BYTE		.equ 3511h
+Cass_Find_Sync		.equ 3B68h
+;Blink_Asterisk		.equ no equivalent				; commented out by IFDEF on VZ
+Write_Leader_Sync	.equ 3558h
+
+LATCH6800_COPY		.equ 783Bh					; copy of the 6800h current control latch value
+CONTROL_LATCH		.equ 6800h
+
 SCREEN_START		.equ 7000h					; TRS-80 Screen is 1024 bytes, Stock VZ = 512, 64x32 VZ = 2048
 RAM_START		.equ 7800h					; First location after screen mem. ($7200 on a stock VZ, $7800 on 64x32 VZ)
 LINE_LEN		.equ 64						; 32 on Stock VZ. 64 chars long on TRS-80, or 64x32 VZ
 SCREEN_LEN		.equ (RAM_START - SCREEN_START)			; ($200 on stock VZ, $400 long on a Model 1, $800 on 64x32 VZ300)
 SCREEN_LINES		.equ (RAM_START - SCREEN_START)/LINE_LEN	; 32 on a 64x32 screen on Laser310_FPGA, 16 on Stock VZ/TRS-80
-
 SCREEN_OVERFLOW		.equ ((RAM_START >> 8) & 0FFH)			; High byte of RAM START. Set to $72 on stock VZ
 
+PRINTER_STATUS		.equ 05C4h					; PORT 00h   Call 5C4h to test printer on VZ
+;NEXT_CHAR_ADD_L2	.equ 7820h					; Video DCB ignored by VZ.  *CAREFUL* here
 L2_PRINTER_DCB		.equ 7825h
-PRINT_CONTROL		.equ 00h					; PORT 00h   Call 5C4h to test printer on VZ
+
+DISK_MEM_SIZE		.equ 78B1h					; VZ uses same mem location if DOS is running or not
+
+CHECK_BREAK		.equ 3AF8h					; rom routine to check break. C set if found, else clear
+
 #ENDIF
 
 ;-------------------------------------------------------------------
 
-; TRS-80 only: 
+; TRS-80 only requiring fixes: 
 
-ROM_DISPLAY_Routine	.equ 001BH	; VZ doesn't use display DCB properly
-sub_3FE			.equ 03FEH	; jumps midway into kbd routine :o(
-CONVERT_LCASE		.equ 047BH
-OUTPUT_CHAR		.equ 047DH
-CHECK_GRAPHIC		.equ 04A6H
-PROCESS_CONTROL		.equ 0506H	; process screen handling, control chars. return via $480
-ROM_PRT_DRIVER		.equ 058DH
+ROM_DISPLAY_Routine	.equ 001BH					; VZ doesn't use display DCB properly
 
-KBD_ROW_01		.equ 3801H	; keyboard locations. Keyboard totally different in VZ/LASER
 KBD_ROW_40		.equ 3840H
 
+Cursor_ON_OFF		.equ 4022H					; Video DCB ignored by VZ.  *CAREFUL* here
 
-L2_VIDEO_DCB		.equ 401DH	; Video DCB ignored by VZ.  *CAREFUL* here
-NEXT_CHAR_ADD_L2	.equ 4020H	; Video DCB ignored by VZ.  *CAREFUL* here
+DOS_INIT		.equ 4420H					; INIT creates a new file in the directory and opens the DCB for this file. 
+DOS_OPEN		.equ 4424H					; OPEN opens the DCB of an existing file
+DOS_CLOSE		.equ 4428H					; CLOSE: Closes a file. Updates the directory and then closes the file from any more processing.
 
-
-KBD_work_area		.equ 4036H
-Display_Control		.equ 403DH	; Upper/Lower Case
-
-RST28_Vector		.equ 400CH	; 780Ch			; Not used in VZ?
-Cursor_ON_OFF		.equ 4022H	; Video DCB ignored by VZ.  *CAREFUL* here
-MEM_SIZE		.equ 4049H
-
-DOS_INIT		.equ 4420H	; INIT creates a new file in the directory and opens the DCB for this file. 
-DOS_OPEN		.equ 4424H	; OPEN opens the DCB of an existing file
-DOS_CLOSE		.equ 4428H	; CLOSE: Closes a file. Updates the directory and then closes the file from any more processing.
+; 6374 3E 1E              ld      a, 1Eh				; clear to EOL **VZ video driver down't understand**
+; 655D 3E 1A              ld      a, 1Ah				; CURSOR DOWN  **VZ video driver down't understand**
+; 6837 3E 0D              ld      a, 0Dh				; need to check that VZ handles 0Dh correctly
+; 69B5 3E 1E              ld      a, 1Eh				; clear to EOL **VZ video driver down't understand**
+; 6BB4 3E 0D              ld      a, 0Dh				; need to check that VZ handles 0Dh correctly
 
 ;-------------------------------------------------------------------------------------------------------
 
 ; Routines with hardcoded values in original (in addition to references above): 
 
-; sub_60FF:
-; 610E 21 28 3C                    ld      hl,  SCREEN_START+28h	; 3C28h
-; 611A 21 30 3C                    ld      hl,  SCREEN_START+30h	; 3C30h
-
-; SHOW_REGS:
-; 636B 21 28 3C                    ld      hl,  SCREEN_START+28h	; 3C28h
-; 6379 21 27 3C                    ld      hl,  SCREEN_START+27h	; 3C27h
 
 ; 67FE 11 F0 00                    ld      de, 0F0h			; '-' means display *previous* page
 ; 680A 06 08                       ld      b, 8				; 8 chars
-; 696D 21 E8 3D                    ld      hl,  SCREEN_START+1E8h
 ; 
-; 6998 3E 07                       ld      a, 7				; last 7 lines
-; 699A 21 28 3E                    ld      hl,  SCREEN_START+228h
-; 69A6 01 18 00                    ld      bc, 24
-; 69AF 21 E8 3F                    ld      hl,  SCREEN_START+3E8h
-; 69BA 21 E8 3F                    ld      hl,  SCREEN_START+3E8h
+; 69A6 01 18 00                    ld      bc, 24			; command/reg area. fixed at 24 is OK
 ; 
-; 6A51 3A 40 38                    ld      a, (KBD_ROW_40)
-; 6A7F 3A 40 38                    ld      a, (KBD_ROW_40)
-; 
-; 792E 3A E8 37                    ld      a, (37E8h)			; check printer
-; 
-; 
-; 79B7 01 01 38                    ld      bc, KBD_ROW_01		; kbd code needs major re-work
 
 ;-------------------------------------------------------------------------------------------------------
 
 ; Routines with hardcoded values now fixxxed!
 
-; 66F4 01 0F 00                    ld      bc, 15          ; disassemble next *15* instructions
-; 6713 06 1E                       ld      b, 30           ; disassemble previous 30 instructions to go pack a page
-; 67EA 0E 0F                       ld      c, 15           ; Display 15 lines
-; Scroll_savregs:
-; 6984 01 40 00                    ld      bc, 64
-; 698F FE 40                       cp      40h ; '@'       ; Are we off the end of the screen?
-; 69A1 01 40 00                    ld      bc, 64
+; sub_60FF:
+; 610E 21 28 3C                    ld      hl,  SCREEN_START+28h	; 3C28h		SCREEN_START+LINE_LEN-18h
+; 611A 21 30 3C                    ld      hl,  SCREEN_START+30h	; 3C30h		SCREEN_START+LINE_LEN-10h
 
-; 793B 0E 10                       ld      c, 16           ; 16 lines
-; 793D 06 40                       ld      b, 64           ; 64 chars per line
+; SHOW_REGS:
+; 636B 21 28 3C                    ld      hl,  SCREEN_START+28h	; 3C28h		SCREEN_START+LINE_LEN-18h
+; 6379 21 27 3C                    ld      hl,  SCREEN_START+27h	; 3C27h		SCREEN_START+LINE_LEN-19h
+
+; 66F4 01 0F 00                    ld      bc, 15			; disassemble next *15* instructions
+; 6713 06 1E                       ld      b, 30			; disassemble previous 30 instructions to go pack a page
+; 67EA 0E 0F                       ld      c, 15			; Display 15 lines
+
+; Scroll_savregs:
+; 696D 21 E8 3D                    ld      hl,  SCREEN_START+1E8h	; 3DE8h		SCREEN_START+(LINE_LEN*8)-18h
+; 6984 01 40 00                    ld      bc, 64
+; 698F FE 40                       cp      40h ; '@'			; Are we off the end of the screen?
+; 6998 3E 07                       ld      a, 7				; last 7 lines
+; 699A 21 28 3E                    ld      hl,  SCREEN_START+228h	; 3E28h		SCREEN_START+(LINE_LEN*9)-18h
+; 69A1 01 40 00                    ld      bc, 64
+; 69AF 21 E8 3F                    ld      hl,  SCREEN_START+3E8h	; 3FE8h		SCREEN_START+(LINE_LEN * SCREEN_LINES)-18h
+; 69BA 21 E8 3F                    ld      hl,  SCREEN_START+3E8h	; 3FE8h		SCREEN_START+(LINE_LEN * SCREEN_LINES)-18h
+
+; 6A51 3A 40 38                    ld      a, (KBD_ROW_40)		; check BREAK key
+; 6A7F 3A 40 38                    ld      a, (KBD_ROW_40)		; check BREAK key
+
+; 792E 3A E8 37                    ld      a, (37E8h)			; check printer
+; 793B 0E 10                       ld      c, 16			; 16 lines
+; 793D 06 40                       ld      b, 64			; 64 chars per line
 
 
 ;-------------------------------------------------------------------------------------------------------
 
+.org 8000h
 
 TASMON_ENTRY:
                 di
@@ -156,9 +203,11 @@ TASMON_ENTRY:
                 ld      hl, TasmonVer222 ; "TASMON  VER 2.22\n(C) 1981 by Bruce G. "...
                 ld      a, 1
                 ld      (dis_DISPLAY_FLG), a
+		;call	28A7h
                 call    SHOW_INSTR_HDR
                 call    SET_EXEC1_to_1  ; default all breakpoints to 1 execution only
                 call    SHOW_REGS
+		;jr	$		; debug
                 call    SET_PROMPT_POS
                 call    SCROLL_SAVEREGS ; save all regs and scroll down
 
@@ -257,17 +306,14 @@ loc_6054:                               ; CODE XREF: GET_COMMAND+F↑j
 
 ; get character, return in A
 
-GET_CHAR:                               ; CODE XREF: GET_COMMAND:unknown_command↑p
-                                        ; GET_COMMAND:reg_char_error↓p ...
-
+GET_CHAR:                              
                 call    SAVE_REGS_GET_CHAR
                 cp      2Ah ; '*'	; Asterisk == perform Screen Dump
                 call    z, SCREEN_DUMP	; dump current screen contents to printer
                 cp      1
                 ret     nz
 
-return_from_user:                       ; CODE XREF: GET_COMMAND+A8↑j
-                                        ; sub_60FF+4↓j ...
+return_from_user:                       
                 ld      sp, a_IXplus
                 call    SHOW_REGS
                 call    SCROLL_SAVEREGS ; save all regs and scroll down
@@ -276,25 +322,25 @@ return_from_user:                       ; CODE XREF: GET_COMMAND+A8↑j
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_60FF:                               ; CODE XREF: sub_6745:loc_6749↓p
+sub_60FF:                               
                 ld      a, (byte_7EEB)
                 or      a
                 jr      nz, return_from_user
                 ld      hl, (reg_PC)
                 call    HL_to_HEX
                 call    SPC_VID_OUT     ; Output a SPC to video and return to caller
-                ld      hl, SCREEN_START+28h	; 3C28h
+                ld      hl, SCREEN_START+LINE_LEN-18h	; 3C28h
                 ld      b, 5
 
-loc_6113:                               ; CODE XREF: sub_60FF+19↓j
+loc_6113:                               
                 ld      a, (hl)
                 call    TAS_VID_DRIVER
                 inc     hl
                 djnz    loc_6113
-                ld      hl, SCREEN_START+30h	; 3C30h
+                ld      hl, SCREEN_START+LINE_LEN-10h	; 3C30h
                 ld      b, 0Ah
 
-loc_611F:                               ; CODE XREF: sub_60FF+25↓j
+loc_611F:                              
                 ld      a, (hl)
                 call    TAS_VID_DRIVER
                 inc     hl
@@ -304,13 +350,12 @@ loc_611F:                               ; CODE XREF: sub_60FF+25↓j
                 ld      hl, (reg_PC)
                 jr      nz, loc_6177
 
-loc_612F:                               ; CODE XREF: sub_60FF+FC↓j
-                                        ; sub_60FF+14C↓j
+loc_612F:                               
                 ld      a, (byte_7BB4)
                 ld      b, a
                 ld      de, byte_7BAD
 
-loc_6136:                               ; CODE XREF: sub_60FF+3B↓j
+loc_6136:                              
                 ld      a, (hl)
                 inc     hl
                 ld      (de), a
@@ -571,7 +616,7 @@ loc_629A:                               ; CODE XREF: sub_6278+1A↑j
                 jr      loc_62C6
 ; ---------------------------------------------------------------------------
 
-loc_62A4:                               ; CODE XREF: sub_6278+24↑j
+loc_62A4:
                 cp      20h ; ' '
                 jr      nz, loc_62AE
                 bit     2, c
@@ -579,7 +624,7 @@ loc_62A4:                               ; CODE XREF: sub_6278+24↑j
                 jr      loc_62C6
 ; ---------------------------------------------------------------------------
 
-loc_62AE:                               ; CODE XREF: sub_6278+2E↑j
+loc_62AE:
                 cp      28h ; '('
                 jr      nz, loc_62B8
                 bit     2, c
@@ -587,7 +632,7 @@ loc_62AE:                               ; CODE XREF: sub_6278+2E↑j
                 jr      loc_62C6
 ; ---------------------------------------------------------------------------
 
-loc_62B8:                               ; CODE XREF: sub_6278+38↑j
+loc_62B8:
                 cp      30h ; '0'
                 jr      nz, loc_62C2
                 bit     7, c
@@ -595,22 +640,19 @@ loc_62B8:                               ; CODE XREF: sub_6278+38↑j
                 jr      loc_62C6
 ; ---------------------------------------------------------------------------
 
-loc_62C2:                               ; CODE XREF: sub_6278+42↑j
+loc_62C2:
                 bit     7, c
                 jr      nz, loc_62C8
 
-loc_62C6:                               ; CODE XREF: sub_6278+C↑j
-                                        ; sub_6278+16↑j ...
+loc_62C6:
                 xor     a
                 ret
 ; ---------------------------------------------------------------------------
 
-loc_62C8:                               ; CODE XREF: sub_6278+A↑j
-                                        ; sub_6278+14↑j ...
+loc_62C8:
                 ld      a, 1
                 or      a
                 ret
-; End of function sub_6278
 
 
 ; =============== S U B R O U T I N E =======================================
@@ -627,7 +669,7 @@ sub_62CC:
                 ld      a, (KEEP_SCREEN_STATE)		; 0 = keep screen off, 1 = keep screen on
                 or      a
                 jr      z, load_user_regs
-                ld      de, SCREEN_START
+                ld      de, SCREEN_START		; restore saved screen
                 ld      hl, (USER_SCREEN_ptr)		; ptr to user supplied $400 byte screen area
                 ld      bc, SCREEN_LEN			; 400h
                 ldir
@@ -655,7 +697,6 @@ load_user_regs:
                 push    hl
                 ld      hl, (GEN_PTR_16)
                 ret
-; End of function sub_62CC
 
 ; ---------------------------------------------------------------------------
 
@@ -706,12 +747,12 @@ BREAKPOINT_RETURN:                      ; DATA XREF: sub_60FF+45↑o
 SHOW_REGS:
 		ld      hl, (NEXT_CHAR_ADD_TM)
                 ld      (SAVE_CURSOR), hl
-                ld      hl, SCREEN_START+28h		; 3C28h
+                ld      hl, SCREEN_START+LINE_LEN-18h	; 3C28h
                 ld      (NEXT_CHAR_ADD_L2), hl		; L2 Video DCB next char address $3C00<=X<=$3FFF
                 ld      (NEXT_CHAR_ADD_TM), hl
                 ld      a, 1Eh				; clear to EOL
                 call    TAS_VID_DRIVER
-                ld      hl, SCREEN_START+27h		; 3C27h
+                ld      hl, SCREEN_START+LINE_LEN-19h	; 3C27h
                 ld      (NEXT_CHAR_ADD_L2), hl		; L2 Video DCB next char address $3C00<=X<=$3FFF
                 ld      hl, (reg_PC)
                 ld      bc, 1				; disassemble *1* instruction
@@ -857,11 +898,10 @@ replace_DE:                             ; CODE XREF: GET_COMMAND+3E1↑j
                 ld      b, 10h
                 ld      a, 45h ; 'E'
 
-loc_646B:                               ; CODE XREF: GET_COMMAND+3EE↑j
-                                        ; GET_COMMAND+41F↑j ...
+loc_646B:
                 call    TAS_VID_DRIVER
 
-loc_646E:                               ; CODE XREF: GET_COMMAND+43B↓j
+loc_646E:
                 call    GET_HEX_CHAR
                 jr      z, loc_6482
                 cp      27h ; '''       ; alt reg
@@ -883,17 +923,16 @@ loc_6482:                               ; CODE XREF: GET_COMMAND+437↑j
                 jr      loc_6499
 ; ---------------------------------------------------------------------------
 
-loc_648D:                               ; CODE XREF: GET_COMMAND+3F7↑j
-                                        ; GET_COMMAND+400↑j ...
+loc_648D:
                 call    TAS_VID_DRIVER
                 ld      a, 20h ; ' '
 
-loc_6492:                               ; CODE XREF: GET_COMMAND+446↑j
+loc_6492:
                 call    TAS_VID_DRIVER
                 push    bc
                 call    HEX_to_HL       ; get 4 digit hex value into the HL register
 
-loc_6499:                               ; CODE XREF: GET_COMMAND+451↑j
+loc_6499:
                 push    hl
                 pop     de
                 pop     bc
@@ -1050,31 +1089,27 @@ Adjust_AF:                              ; CODE XREF: GET_COMMAND+4FB↑p
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_655D:                               ; CODE XREF: DISASSEMBLE+9E↓p
-                ld      a, 1Ah
+LF_LEFT_EDGE:
+                ld      a, 1Ah			; do line feed. (** VZ can't hanlde this **)
                 call    TAS_VID_DRIVER
-                ld      a, 1Dh
+                ld      a, 1Dh			; force left edge
                 jp      TAS_VID_DRIVER
-; End of function sub_655D
 
 
 ; =============== S U B R O U T I N E =======================================
 
 ; get 4 digit hex value into the HL register
 
-HEX_to_HL:                              ; CODE XREF: GET_COMMAND+45C↑p
-                                        ; HEX_to_HL+3↓j ...
+HEX_to_HL:
                 call    GET_HEX_CHAR
                 jr      nz, HEX_to_HL   ; get 4 digit hex value into the HL register
-; End of function HEX_to_HL
 
 
 ; =============== S U B R O U T I N E =======================================
 
 ; 4 byte hex value to HL register
 
-HEX_VAL_to_HL:                          ; CODE XREF: GET_COMMAND+44E↑p
-                                        ; GET_COMMAND:loc_675D↓p ...
+HEX_VAL_to_HL:  
                 call    TAS_VID_DRIVER
                 call    Adjust_AF
                 sla     a
@@ -1083,22 +1118,19 @@ HEX_VAL_to_HL:                          ; CODE XREF: GET_COMMAND+44E↑p
                 sla     a
                 ld      h, a
 
-loc_657B:                               ; CODE XREF: HEX_VAL_to_HL+12↓j
+loc_657B:
                 call    GET_HEX_CHAR
                 jr      nz, loc_657B
                 call    TAS_VID_DRIVER
                 call    Adjust_AF
                 add     a, h
-                ld      h, a
-; End of function HEX_VAL_to_HL
-
+                ld      h, a		; falls through to next routine
 
 ; =============== S U B R O U T I N E =======================================
 
 ; 2 byte hex value to L register (also in A)
 
-HEX_VAL_to_L:                           ; CODE XREF: HEX_VAL_to_L+3↓j
-                                        ; GET_COMMAND+A9A↓p ...
+HEX_VAL_to_L:
                 call    GET_HEX_CHAR
                 jr      nz, HEX_VAL_to_L ; 2 byte hex value to L register (also in A)
                 call    TAS_VID_DRIVER
@@ -1109,7 +1141,7 @@ HEX_VAL_to_L:                           ; CODE XREF: HEX_VAL_to_L+3↓j
                 sla     a
                 ld      l, a
 
-loc_659C:                               ; CODE XREF: HEX_VAL_to_L+17↓j
+loc_659C: 
                 call    GET_HEX_CHAR
                 jr      nz, loc_659C
                 call    TAS_VID_DRIVER
@@ -1117,14 +1149,11 @@ loc_659C:                               ; CODE XREF: HEX_VAL_to_L+17↓j
                 add     a, l
                 ld      l, a
                 ret
-; End of function HEX_VAL_to_L
-
 
 ; =============== S U B R O U T I N E =======================================
 
 
-GET_HEX_CHAR:                           ; CODE XREF: GET_COMMAND:loc_646E↑p
-                                        ; GET_COMMAND:loc_6541↑p ...
+GET_HEX_CHAR:
                 call    GET_CHAR        ; get character, return in A
                 cp      0
                 jr      z, GET_HEX_CHAR
@@ -1280,8 +1309,12 @@ loc_6676:                               ; CODE XREF: GET_COMMAND+652↓j
 loc_6678:                               ; CODE XREF: GET_COMMAND+654↓j
                 push    bc
                 call    CHECK_BREAK     ; check status of the BREAK key
+#IFDEF TRS80
                 jp      nz, return_from_user
-                call    sub_6739
+#ELSE
+		jp      c, return_from_user	; VZ rom routine uses carry flag to indicate BREAK combo pressed
+#ENDIF
+		call    sub_6739
                 ld      hl, (reg_PC)
                 call    sub_6AE2
                 pop     bc
@@ -1611,12 +1644,11 @@ try_show_ascii:                         ; CODE XREF: show_8_chars+F↑j
 loc_6832:                               ; CODE XREF: show_8_chars+15↑j
                 call    SPC_VID_OUT     ; Output a SPC to video and return to caller
                 djnz    loc_6812
-                ld      a, 0Dh
+                ld      a, 0Dh		; do <CR>
                 call    TAS_VID_DRIVER
                 dec     c               ; shown 15 lines yet?
                 jr      nz, show_8_chars
                 ret
-; End of function show_8_chars
 
 ; ---------------------------------------------------------------------------
 
@@ -1629,6 +1661,8 @@ loc_6843:                               ; CODE XREF: GET_COMMAND+80E↓j
                 jr      nz, loc_6843
                 halt
                 rst     00H               ; Jump back to BASIC
+
+; ---------------------------------------------------------------------------
 
 trace:                                  ; CODE XREF: GET_COMMAND+58↑j
                 call    OUT_CHAR_SPC    ; output char in A, followed by a space to vid and return
@@ -1741,7 +1775,11 @@ loc_68DF:                               ; CODE XREF: GET_COMMAND+8B5↓j
 loc_68E5:                               ; CODE XREF: GET_COMMAND+8B3↓j
                 dec     de
                 call    CHECK_BREAK     ; check status of the BREAK key
+#IFDEF TRS80
                 jr      nz, loc_68B0
+#ELSE
+                jr      c, loc_68B0		; VZ rom routine uses carry flag to indicate BREAK combo pressed
+#ENDIF
                 ld      a, d
                 or      e
                 jr      nz, loc_68E5
@@ -1830,14 +1868,13 @@ loc_6955:                               ; CODE XREF: GET_COMMAND+91F↓j
 ; =============== S U B R O U T I N E =======================================
 
 
-SET_PROMPT_POS:                         ; CODE XREF: RAM:6028↑p
-                                        ; GET_COMMAND+14↑p ...
-                ld      hl, SCREEN_START+1E8h	; 3DE8h
+SET_PROMPT_POS:                        
+                ld      hl, SCREEN_START+(LINE_LEN*8)-18h	; 3DE8h
                 ld      (NEXT_CHAR_ADD_L2), hl ; L2 Video DCB next char address $3C00<=X<=$3FFF
                 ld      (NEXT_CHAR_ADD_TM), hl
                 ret
-; End of function SET_PROMPT_POS
 
+; End of function SET_PROMPT_POS
 
 ; =============== S U B R O U T I N E =======================================
 
@@ -1857,43 +1894,42 @@ SCROLL_SAVEREGS:
 ; =============== S U B R O U T I N E =======================================
 
 
-SCROLL_CMD:						; CODE XREF: SCROLL_SAVEREGS+3↑p
+SCROLL_CMD:						
                 ld      hl, (NEXT_CHAR_ADD_TM)
-                ld      bc, LINE_LEN			; 64
-                add     hl, bc				; down one line
+                ld      bc, LINE_LEN				; 64
+                add     hl, bc					; down one line
                 ld      (NEXT_CHAR_ADD_TM), hl
-                ld      (NEXT_CHAR_ADD_L2), hl		; L2 Video DCB next char address $3C00<=X<=$3FFF
+                ld      (NEXT_CHAR_ADD_L2), hl			; L2 Video DCB next char address $3C00<=X<=$3FFF
                 ld      a, h
-                cp      SCREEN_OVERFLOW			; 40XXh ; Are we off the end of the screen?
-                ret     m				; return if not off bottom of screen
+                cp      SCREEN_OVERFLOW				; 40XXh ; Are we off the end of the screen?
+                ret     m					; return if not off bottom of screen
                 xor     a
                 sbc     hl, bc
                 ld      (NEXT_CHAR_ADD_TM), hl
-                ld      a, 7				; last 7 lines?
-                ld      hl, SCREEN_START+228h		; 3E28h
+                ld      a, SCREEN_LINES - 9			; 7 on TRS-80, Stock VZ.  25 on VZ-6432	; last 7 lines
+                ld      hl, SCREEN_START+(LINE_LEN*9)-18h	; 3E28h
                 push    hl
 
-loc_699E:
+scroll_cmd_area:
                 pop     de
                 push    de
                 pop     hl
-                ld      bc, LINE_LEN			; 64
+                ld      bc, LINE_LEN				; 64
                 add     hl, bc
                 push    hl
-                ld      bc, 24				; command area 24chars wide
+                ld      bc, 24					; command area 24chars wide
                 ldir
                 dec     a
-                jr      nz, loc_699E
+                jr      nz, scroll_cmd_area
                 pop     hl
-                ld      hl, SCREEN_START+3E8h		; 3FE8h
-                ld      (NEXT_CHAR_ADD_L2), hl		; L2 Video DCB next char address $3C00<=X<=$3FFF
-                ld      a, 1Eh				; clear to end of current line
+                ld      hl, SCREEN_START+(LINE_LEN * SCREEN_LINES)-18h	; 3FE8h
+                ld      (NEXT_CHAR_ADD_L2), hl				; L2 Video DCB next char address $3C00<=X<=$3FFF
+                ld      a, 1Eh						; clear to end of current line
                 call    TAS_VID_DRIVER
-                ld      hl, SCREEN_START+3E8h		; 3FE8h
-                ld      (NEXT_CHAR_ADD_L2), hl		; L2 Video DCB next char address $3C00<=X<=$3FFF
+                ld      hl, SCREEN_START+(LINE_LEN * SCREEN_LINES)-18h	; 3FE8h
+                ld      (NEXT_CHAR_ADD_L2), hl				; L2 Video DCB next char address $3C00<=X<=$3FFF
                 ld      (NEXT_CHAR_ADD_TM), hl
                 ret
-; End of function SCROLL_CMD
 
 
 ; =============== S U B R O U T I N E =======================================
@@ -1908,7 +1944,7 @@ OUT_CHAR_SPC:                           ; CODE XREF: GET_COMMAND:replace_reg_pai
 
 ; ---------------------------------------------------------------------------
 
-disassem_to_printer:                    ; CODE XREF: GET_COMMAND+62↑j
+disassem_to_printer: 
                 call    OUT_CHAR_SPC    ; output char in A, followed by a space to vid and return
                 call    HEX_to_HL       ; get 4 digit hex value into the HL register
                 push    hl
@@ -1924,7 +1960,7 @@ disassem_to_printer:                    ; CODE XREF: GET_COMMAND+62↑j
                 pop     hl
                 ld      (GEN_PTR_16), hl
 
-loc_69E8:                               ; CODE XREF: GET_COMMAND+9D1↓j
+loc_69E8:  
                 ld      a, 1
                 ld      (PRINT_OUT_FLAG), a
                 ld      bc, 1
@@ -1947,21 +1983,15 @@ loc_69E8:                               ; CODE XREF: GET_COMMAND+9D1↓j
 ; =============== S U B R O U T I N E =======================================
 
 
-CLEAR_VIDEO:                            ; CODE XREF: RAM:6001↑p
-                                        ; GET_COMMAND+11↑p ...
+CLEAR_VIDEO:    
+
+#IFDEF TRS80
                 call    do_clear_screen
                 xor     a
                 ld      (Display_Control), a
                 out     (0FFh), a       ; ensure 64 character mode active
-                ret
-; End of function CLEAR_VIDEO
-
-
-; =============== S U B R O U T I N E =======================================
-
-
-do_clear_screen:                        ; CODE XREF: CLEAR_VIDEO↑p
-                                        ; GET_COMMAND+12F6↓p
+		ret
+do_clear_screen:                       
                 push    hl
                 push    de
                 push    bc
@@ -1975,6 +2005,12 @@ do_clear_screen:                        ; CODE XREF: CLEAR_VIDEO↑p
                 pop     de
                 pop     hl
                 ret
+#ELSE
+do_clear_screen:
+		call	VZ_CLS
+		ret
+#ENDIF
+                
 
 
 ; ---------------------------------------------------------------------------
@@ -1996,7 +2032,7 @@ loc_6A35:
                 ld      bc, SCREEN_LEN		; 400h
                 ldir
 
-loc_6A51:                               ; CODE XREF: GET_COMMAND+A1C↓j
+loc_6A51:
                 ld      a, (KBD_ROW_40)
                 cp      1		; wait for ENTER key press
                 jr      z, loc_6A51
@@ -2019,14 +2055,14 @@ loc_6A64:
                 ret
 ; ---------------------------------------------------------------------------
 
-keep_screen_off:                        ; CODE XREF: GET_COMMAND+A02↑j
+keep_screen_off:
                 call    TAS_VID_DRIVER
                 xor     a
                 ld      (KEEP_SCREEN_STATE), a ; 0 = keep screen off, 1 = keep screen on
                 ret
 ; ---------------------------------------------------------------------------
 
-keep_screen_on:                         ; CODE XREF: GET_COMMAND+A06↑j
+keep_screen_on:
                 call    TAS_VID_DRIVER
                 ld      a, 1
                 ld      (KEEP_SCREEN_STATE), a ; 0 = keep screen off, 1 = keep screen on
@@ -2034,15 +2070,13 @@ keep_screen_on:                         ; CODE XREF: GET_COMMAND+A06↑j
 
 ; =============== S U B R O U T I N E =======================================
 
-; check status of the BREAK key
+#IFDEF TRS80
 
-CHECK_BREAK:
-                ld      a, (KBD_ROW_40)
+CHECK_BREAK:					; call rom routine at 3AF8h if on VZ
+                ld      a, (KBD_ROW_40)		; check status of the BREAK key
                 and     4
                 ret
-
-; End of function CHECK_BREAK
-
+#ENDIF
 
 ; =============== S U B R O U T I N E =======================================
 
@@ -2131,13 +2165,12 @@ loc_6ACA:                               ; CODE XREF: GET_COMMAND+A71↑j
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_6AE2:                               ; CODE XREF: GET_COMMAND+633↑p
-                                        ; GET_COMMAND+64B↑p ...
+sub_6AE2: 
                 ld      ix, BREAKPOINTS ; 9 breakpoints (9 x 2 byte addresses)
                 ld      b, 9
                 ld      a, 1
 
-loc_6AEA:                               ; CODE XREF: sub_6AE2+19↓j
+loc_6AEA: 
                 ld      e, (ix+0)
                 ld      d, (ix+1)
                 inc     ix
@@ -2152,7 +2185,7 @@ loc_6AEA:                               ; CODE XREF: sub_6AE2+19↓j
                 ret
 ; ---------------------------------------------------------------------------
 
-loc_6AFF:                               ; CODE XREF: sub_6AE2+17↑j
+loc_6AFF: 
                 ld      a, 9
                 sub     b
                 ld      c, a
@@ -2162,14 +2195,11 @@ loc_6AFF:                               ; CODE XREF: sub_6AE2+17↑j
                 dec     (hl)
                 scf
                 ret
-; End of function sub_6AE2
-
 
 ; =============== S U B R O U T I N E =======================================
 
 
-DISASSEMBLE:                            ; CODE XREF: SHOW_REGS+25↑p
-                                        ; GET_COMMAND:loc_66F9↑p ...
+DISASSEMBLE: 
                 ld      (GEN_PTR_16), hl
                 ld      (dis_DISASSEM_START), hl ; HL = Instruction Start Address
                 ld      (dis_NUM_INSTRS), bc ; BC = number of instructions to disassemble
@@ -2178,7 +2208,7 @@ DISASSEMBLE:                            ; CODE XREF: SHOW_REGS+25↑p
                 ld      (byte_7EEB), a
                 ld      (byte_7B8D), a
 
-loc_6B20:                               ; CODE XREF: DISASSEMBLE+C9↓j
+loc_6B20: 
                 ld      a, (byte_7EE4)
                 or      a
                 jr      z, loc_6B2B
@@ -2186,7 +2216,7 @@ loc_6B20:                               ; CODE XREF: DISASSEMBLE+C9↓j
                 jr      loc_6B3E
 ; ---------------------------------------------------------------------------
 
-loc_6B2B:                               ; CODE XREF: DISASSEMBLE+18↑j
+loc_6B2B: 
                 ld      a, (byte_7BA6)
                 cp      1
                 jr      z, loc_6B3E
@@ -2196,8 +2226,7 @@ loc_6B2B:                               ; CODE XREF: DISASSEMBLE+18↑j
                 call    HL_to_HEX
                 call    sub_7282
 
-loc_6B3E:                               ; CODE XREF: DISASSEMBLE+1D↑j
-                                        ; DISASSEMBLE+24↑j ...
+loc_6B3E: 
                 ld      a, (dis_DISPLAY_FLG)
                 push    af
                 xor     a
@@ -2228,7 +2257,7 @@ loc_6B3E:                               ; CODE XREF: DISASSEMBLE+1D↑j
                 push    hl
                 push    bc
 
-loc_6B79:                               ; CODE XREF: DISASSEMBLE+71↓j
+loc_6B79: 
                 call    sub_7146
                 inc     hl
                 djnz    loc_6B79
@@ -2260,22 +2289,20 @@ loc_6B97:                               ; CODE XREF: DISASSEMBLE+69↑j
                 ld      a, (byte_7BA6)
                 cp      1
                 jr      nz, loc_6BB4
-                call    sub_655D
+                call    LF_LEFT_EDGE
                 jr      loc_6BB9
 ; ---------------------------------------------------------------------------
 
-loc_6BAF:                               ; CODE XREF: DISASSEMBLE+7F↑j
-                                        ; DISASSEMBLE+83↑j
+loc_6BAF: 
                 call    sub_728D
                 jr      loc_6B94
 ; ---------------------------------------------------------------------------
 
-loc_6BB4:                               ; CODE XREF: DISASSEMBLE+9C↑j
+loc_6BB4: 
                 ld      a, 0Dh
                 call    TAS_VID_DRIVER
 
-loc_6BB9:                               ; CODE XREF: DISASSEMBLE+95↑j
-                                        ; DISASSEMBLE+A1↑j
+loc_6BB9: 
                 ld      bc, (dis_NUM_INSTRS)
                 dec     bc
                 ld      (dis_NUM_INSTRS), bc
@@ -3074,9 +3101,7 @@ sub_7061:                               ; CODE XREF: sub_6BD8+48↑p
 ; =============== S U B R O U T I N E =======================================
 
 
-SHOW_INSTR_HDR:                               ; CODE XREF: RAM:601F↑p
-                                        ; SHOW_REGS+83↑p ...
-
+SHOW_INSTR_HDR:
                 ld      a, (byte_7EE4)
                 or      a
                 jr      nz, loc_707A
@@ -3084,8 +3109,7 @@ SHOW_INSTR_HDR:                               ; CODE XREF: RAM:601F↑p
                 or      a
                 ret     z
 
-loc_707A:                               ; CODE XREF: SHOW_INSTR_HDR+4↑j
-                                        ; SHOW_INSTR_HDR+47↓j
+loc_707A:  
                 ld      a, (hl)
                 cp      3
                 ret     z
@@ -3112,11 +3136,10 @@ loc_708F:                               ; CODE XREF: sub_7061+C↑j
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_7096:                               ; CODE XREF: DISASSEMBLE+78↑p
-                                        ; SHOW_INSTR_HDR+22↑p ...
+sub_7096: 
                 ld      c, a
                 ld      a, (NEXT_CHAR_ADD_L2) ; L2 Video DCB next char address $3C00<=X<=$3FFF
-                and     3Fh ; '?'
+                and     LINE_LEN-1		; 3Fh , 1F on Stock VZ
                 ld      b, a
                 cp      c
                 ld      a, c
@@ -3612,18 +3635,15 @@ sub_7279:                               ; CODE XREF: sub_6BD8+50↑p
 
 ; Output a SPC to video and return to caller
 
-SPC_VID_OUT:                            ; CODE XREF: sub_60FF+C↑p
-                                        ; SHOW_REGS+4D↑p ...
+SPC_VID_OUT:
                 ld      a, 20h ; ' '
                 jp      TAS_VID_DRIVER
-; End of function SPC_VID_OUT
 
 
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_7282:                               ; CODE XREF: DISASSEMBLE+2F↑p
-                                        ; sub_7096:loc_70A8↑p
+sub_7282:
                 ld      a, (byte_7EE4)
                 or      a
                 jr      nz, sub_728D
@@ -3636,8 +3656,7 @@ sub_7282:                               ; CODE XREF: DISASSEMBLE+2F↑p
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_728D:                               ; CODE XREF: DISASSEMBLE:loc_6BAF↑p
-                                        ; sub_7282+4↑j
+sub_728D:
                 ld      a, 20h ; ' '
                 call    TAS_VID_DRIVER
                 ld      a, (PRINT_OUT_FLAG)
@@ -3645,12 +3664,10 @@ sub_728D:                               ; CODE XREF: DISASSEMBLE:loc_6BAF↑p
                 ret     z
                 ld      a, 20h ; ' '
                 jp      TAS_PTR_DRIVER
-; End of function sub_728D
 
 ; ---------------------------------------------------------------------------
 
-loc_729C:                               ; CODE XREF: sub_6BD8:loc_6FBD↑j
-                                        ; sub_6BD8+47D↑j
+loc_729C:
                 ld      a, 1
                 ld      (byte_7EEB), a
                 ld      hl, (dis_DISASSEM_START)
@@ -3662,11 +3679,10 @@ loc_729C:                               ; CODE XREF: sub_6BD8:loc_6FBD↑j
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_72B0:                               ; CODE XREF: sub_6BD8+C↑p
-                                        ; sub_6BD8+3F4↑p
+sub_72B0: 
                 ld      c, b
 
-loc_72B1:                               ; CODE XREF: sub_72B0+5↓j
+loc_72B1: 
                 cp      (hl)
                 jr      z, loc_72BE
                 inc     hl
@@ -3697,10 +3713,10 @@ loc_72C8:                               ; CODE XREF: sub_72B0+1B↓j
 
 ; ---------------------------------------------------------------------------
 
-output_disassembly:                     ; CODE XREF: GET_COMMAND+7B↑j
+output_disassembly: 
                 call    OUT_CHAR_SPC    ; output char in A, followed by a space to vid and return
 
-out_key_error:                          ; CODE XREF: GET_COMMAND+12A9↓j
+out_key_error: 
                 call    GET_CHAR        ; get character, return in A
                 ld      b, 0
                 cp      44h ; 'D'
@@ -3709,11 +3725,11 @@ out_key_error:                          ; CODE XREF: GET_COMMAND+12A9↓j
                 jr      nz, out_key_error
                 inc     b
 
-out_disassem_disk:                      ; CODE XREF: GET_COMMAND+12A5↑j
+out_disassem_disk: 
                 call    GET_PARAMS
                 ld      a, b
                 ld      (DISK_TAPE_FLAG), a ; 1 = TAPE, 0 = DISK
-                ld      hl, (MEM_SIZE)
+                ld      hl, (DISK_MEM_SIZE)
                 ld      (word_7EE5), hl
                 ld      hl, 0
                 ld      (word_7EE7), hl
@@ -3730,20 +3746,20 @@ out_disassem_disk:                      ; CODE XREF: GET_COMMAND+12A5↑j
                 call    sub_73C1
                 ld      b, 6
 
-loc_7319:                               ; CODE XREF: GET_COMMAND+12E4↓j
+loc_7319: 
                 ld      a, 41h ; 'A'
                 call    sub_73C1
                 djnz    loc_7319
                 jr      loc_732D
 ; ---------------------------------------------------------------------------
 
-loc_7322:                               ; CODE XREF: GET_COMMAND+12D0↑j
+loc_7322: 
                 call    GET_PARAM_STRING
                 call    sub_739B
                 ld      a, 0D3h
                 call    WRITE_FILENAME
 
-loc_732D:                               ; CODE XREF: GET_COMMAND+12E6↑j
+loc_732D: 
                 call    SET_PROMPT_POS
                 call    do_clear_screen
                 call    sub_7403
@@ -3788,7 +3804,7 @@ loc_732D:                               ; CODE XREF: GET_COMMAND+12E6↑j
 loc_738F:                               ; CODE XREF: GET_COMMAND+134E↑j
                 ld      de, string_buffer
                 call    DOS_CLOSE
-                jp      nz, loc_7602
+                jp      nz, dos_error
 
 loc_7398:                               ; CODE XREF: GET_COMMAND+1353↑j
                 jp      return_from_user
@@ -3850,7 +3866,7 @@ sub_73C1:                               ; CODE XREF: GET_COMMAND+12DA↑p
 
 loc_73CF:                               ; CODE XREF: sub_73C1+6↑j
                 pop     af
-                call    sub_7636
+                call    write_dsk_DCB
                 pop     de
                 ret
 ; End of function sub_73C1
@@ -4183,7 +4199,7 @@ loc_7572:                               ; CODE XREF: GET_COMMAND+14DC↑j
                 push    hl
                 ld      de, string_buffer
                 call    DOS_CLOSE
-                jr      nz, loc_7602
+                jr      nz, dos_error
                 ld      hl, (parm_END)
                 call    HL_to_HEX
                 call    SPC_VID_OUT     ; Output a SPC to video and return to caller
@@ -4204,14 +4220,14 @@ sub_75A3:                               ; CODE XREF: GET_COMMAND:loc_750D↑p
                 ld      de, string_buffer
                 call    ROM_KBD_Routine
                 pop     de
-                jr      nz, loc_7602
+                jr      nz, dos_error
                 ret
 ; ---------------------------------------------------------------------------
 
 loc_75AE:                               ; CODE XREF: GET_COMMAND+14E3↑j
                                         ; GET_COMMAND+14E8↑j
                 ld      a, 22h ; '"'
-                jr      loc_7602
+                jr      dos_error
 ; ---------------------------------------------------------------------------
 
 write_tape_disk:                        ; CODE XREF: GET_COMMAND+6C↑j
@@ -4246,19 +4262,18 @@ loc_75DE:                               ; CODE XREF: sub_75A3+31↑j
                 cp      l
                 call    nz, sub_761B
                 ld      a, 2
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, 2
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, (parm_TRANSFER)
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, (parm_TRANSFER+1)
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      de, string_buffer
                 call    DOS_CLOSE
                 jr      z, loc_7618
 
-loc_7602:                               ; CODE XREF: GET_COMMAND+135B↑j
-                                        ; GET_COMMAND+154F↑j ...
+dos_error:   
                 push    af
                 xor     a
                 ld      (byte_7EE4), a
@@ -4270,28 +4285,26 @@ loc_7602:                               ; CODE XREF: GET_COMMAND+135B↑j
                 pop     af
                 call    sub_7147
 
-loc_7618:                               ; CODE XREF: GET_COMMAND+1567↑j
-                                        ; sub_75A3+5D↑j
+loc_7618:       
                 jp      return_from_user
 
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_761B:                               ; CODE XREF: sub_75A3+36↑p
-                                        ; sub_75A3+3E↑p
+sub_761B:  
                 ld      a, 1
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, 2
                 add     a, b
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, e
-                call    sub_7636
+                call    write_dsk_DCB
                 ld      a, d
-                call    sub_7636
+                call    write_dsk_DCB
 
-loc_762E:                               ; CODE XREF: sub_761B+18↓j
+loc_762E: 
                 ld      a, (de)
-                call    sub_7636
+                call    write_dsk_DCB
                 inc     de
                 djnz    loc_762E
                 ret
@@ -4299,26 +4312,28 @@ loc_762E:                               ; CODE XREF: sub_761B+18↓j
 ; =============== S U B R O U T I N E =======================================
 
 
-sub_7636:
+write_dsk_DCB:
 		push    de
-                ld      de, string_buffer
-                call    ROM_DISPLAY_Routine
-                jr      nz, loc_7602
+                ld      de, string_buffer	; converted by DOS to an FCB relating to the file
+                call    ROM_DISPLAY_Routine	; write to the disk file using the FCB vis the rom DCB caller
+                jr      nz, dos_error
                 di
                 pop     de
                 ret
 
+; =============== S U B R O U T I N E =======================================
+
 OPEN_DSK_FILE_WR:
 		call    GET_DOS_PARAMS
                 call    DOS_INIT
-                jr      nz, loc_7602
+                jr      nz, dos_error
                 ret
 
 
 OPEN_DSK_FILE_RD:                               
                 call    GET_DOS_PARAMS
                 call    DOS_OPEN
-                jr      nz, loc_7602
+                jr      nz, dos_error
                 jp      SCROLL_SAVEREGS ; save all regs and scroll down
 
 
@@ -4843,7 +4858,7 @@ MOVE:                                   ; CODE XREF: GET_COMMAND+1825↑p
                 ret
 ; ---------------------------------------------------------------------------
 
-blk_overlap:                            ; CODE XREF: MOVE+5↑j
+blk_overlap:
                 add     hl, bc
                 dec     hl
                 ex      de, hl
@@ -4858,8 +4873,7 @@ blk_overlap:                            ; CODE XREF: MOVE+5↑j
 ; =============== S U B R O U T I N E =======================================
 
 
-SCREEN_DUMP:                               ; CODE XREF: GET_CHAR+5↑p
-
+SCREEN_DUMP:
                 call    checkPRT        ; Check if Printer is Ready
                 jr      z, do_screen_dump
                 xor     a
@@ -4871,11 +4885,16 @@ SCREEN_DUMP:                               ; CODE XREF: GET_CHAR+5↑p
 ; Check if Printer is Ready
 
 checkPRT:                               
-                ld      a, (37E8h)
+#IFDEF TRS80
+                ld      a, (PRINT_CONTROL)	; 37E8h
                 and     0F0h
                 cp      30h ; '0'
                 ret
-
+#ELSE
+		call	PRINTER_STATUS
+		bit	0,A
+		ret
+#ENDIF
 ; ---------------------------------------------------------------------------
 
 do_screen_dump:
@@ -4917,20 +4936,17 @@ loc_794E:
 
 ; Get ascii string to (HL), maxlen = B
 
-GET_ASCII:                              ; CODE XREF: GET_DOS_PARAMS+8↑p
-                                        ; GET_PARAM_STRING+8↑p
+GET_ASCII: 
                 ld      c, b
 
-loc_7961:                               ; CODE XREF: GET_ASCII+34↓j
-                                        ; GET_ASCII+4A↓j
-                ld      a, 5Fh ; '_'
+loc_7961: 
+                ld      a, 5Fh ; '_'		; cursor char
                 call    TAS_VID_DRIVER
 
-loc_7966:                               ; CODE XREF: GET_ASCII+A↓j
-                                        ; GET_ASCII+1A↓j ...
+ga_wait_char: 
                 call    SAVE_REGS_GET_CHAR
                 or      a
-                jr      z, loc_7966
+                jr      z, ga_wait_char
                 cp      1
                 jr      z, loc_79AC
                 cp      0Dh
@@ -4938,20 +4954,20 @@ loc_7966:                               ; CODE XREF: GET_ASCII+A↓j
                 cp      8
                 jr      z, loc_799C
                 cp      20h ; ' '
-                jr      c, loc_7966
+                jr      c, ga_wait_char
                 cp      5Bh ; '['
-                jr      nc, loc_7966
+                jr      nc, ga_wait_char
                 push    af
                 ld      a, b
                 or      a
                 jr      z, loc_7996
                 dec     b
 
-loc_7986:                               ; CODE XREF: GET_ASCII+3A↓j
+loc_7986:
                 ld      a, 8
                 call    TAS_VID_DRIVER
                 pop     af
-                ld      (hl), a
+                ld      (hl), a		; save char to ascii buffer
                 inc     hl
                 cp      0Dh
                 ret     z
@@ -4959,20 +4975,20 @@ loc_7986:                               ; CODE XREF: GET_ASCII+3A↓j
                 jr      loc_7961
 ; ---------------------------------------------------------------------------
 
-loc_7996:                               ; CODE XREF: GET_ASCII+23↑j
+loc_7996:
                 pop     af
-                jr      loc_7966
+                jr      ga_wait_char
 ; ---------------------------------------------------------------------------
 
-loc_7999:                               ; CODE XREF: GET_ASCII+12↑j
+loc_7999:
                 push    af
                 jr      loc_7986
 ; ---------------------------------------------------------------------------
 
-loc_799C:                               ; CODE XREF: GET_ASCII+16↑j
+loc_799C:
                 ld      a, b
                 sub     c
-                jr      z, loc_7966
+                jr      z, ga_wait_char
                 inc     b
                 dec     hl
                 ld      a, 8
@@ -4981,12 +4997,15 @@ loc_799C:                               ; CODE XREF: GET_ASCII+16↑j
                 jr      loc_7961
 ; ---------------------------------------------------------------------------
 
-loc_79AC:                               ; CODE XREF: GET_ASCII+E↑j
+loc_79AC:
                 ld      a, 8
                 call    TAS_VID_DRIVER
                 jp      return_from_user
 
 ; =============== S U B R O U T I N E =======================================
+
+
+#IFDEF TRS80
 
 ; tasmon internal keyboard driver
 ; very similar to L2 keyboard driver @ $03E3
@@ -5068,6 +5087,11 @@ loc_7A09:
                 pop     af
                 ret
 
+#ELSE
+
+TAS_KBD_DRIVER: call	0049h			; VZ read keyboard via DCB
+
+#ENDIF
 ; =============== S U B R O U T I N E =======================================
 
 
@@ -5134,25 +5158,23 @@ fill_continue:                          ; CODE XREF: GET_COMMAND+1A47↓j
 ; =============== S U B R O U T I N E =======================================
 
 
-TAS_VID_DRIVER:                         ; CODE XREF: GET_COMMAND+2↑p
-                                        ; sub_60FF+15↑p ...
-
+TAS_VID_DRIVER:
                 push    bc
                 push    hl
                 push    ix
                 push    de
-                ld      ix, L2_VIDEO_DCB
+                ld      ix, L2_VIDEO_DCB	; 0458h on TRS-80, in data area on VZ
                 ld      c, a
-                ld      hl, DRIVER_EXIT ; restore regs after DCB call, then return to caller
+                ld      hl, DRIVER_EXIT		; 03DDh on all machines restore regs after DCB call, then return to caller
                 push    hl
                 ld      l, (ix+3)
-                ld      h, (ix+4)
-                ld      a, (ix+5)
-                or      a
+                ld      h, (ix+4)		; HL = current video address
+                ld      a, (ix+5)		; A = char at current address
+                or      a			
                 jr      z, loc_7AA1
                 ld      (hl), a
 
-loc_7AA1:                               ; CODE XREF: TAS_VID_DRIVER+18↑j
+loc_7AA1: 
                 ld      a, c
                 cp      20h ; ' '
                 jp      c, PROCESS_CONTROL
@@ -5160,10 +5182,245 @@ loc_7AA1:                               ; CODE XREF: TAS_VID_DRIVER+18↑j
                 jp      nc, CHECK_GRAPHIC
                 ld      (hl), a
                 cp      (hl)
-                jp      nz, CONVERT_LCASE
+                jp      nz, CONVERT_LCASE	; shouldn't happen on VZ as all video bits active
                 jp      OUTPUT_CHAR
-; End of function TAS_VID_DRIVER
 
+;------------------------------------------------------------------------------------------------------
+#IFNDEF TRS80
+;		Duplicate the TRS-80 video driver when running on the VZ.
+;		VZ video driver has fancy print ahead logic, which screws with screen positioning.
+
+; on Entry IX=>DCB, C = Character to display.
+; Carry flag set means return last character
+
+VID_DRIVER:
+                ld      l, (ix+3)
+                ld      h, (ix+4)					; HL = NEXT VIDEO ADDRESS
+                jr      c, return_last_char
+                ld      a, (ix+5)					; A = Cursor character. 00 = NO Cursor
+                or      a
+                jr      z, no_cursor
+                ld      (hl), a						; Place cursor char at next address
+
+no_cursor:  
+                ld      a, c
+                cp      20h ; ' '
+                jp      c, PROCESS_CONTROL ; process screen handling, control chars. return via $480
+                cp      80h
+                jr      nc, CHECK_GRAPHIC
+                cp      40h ; '@'
+                jr      c, OUTPUT_CHAR
+                sub     40h ; '@'
+                cp      20h ; ' '
+                jr      c, OUTPUT_CHAR
+CONVERT_LCASE:
+                sub     20h ; ' '
+OUTPUT_CHAR: 
+                call    console_out
+
+update_VID_DCB_RET:
+
+                ld      a, h
+                and	((RAM_START - SCREEN_START) >> 8) - 1		; 3, 1 on Stock VZ, 3 = 64x32 VZ
+                or      ((SCREEN_START >> 8)				; 3Ch ; '<'       ; Ensure HL is in range 3CXX-3FXX, 70XX-71XX, 70XX-77XX
+                ld      h, a
+                ld      d, (hl)						; get current character
+                ld      a, (ix+5)
+                or      a						; 0 == no cursor flag
+                jr      z, no_update					; don't update current if ZERO
+                ld      (ix+5), d					; Update last char in DCB
+                ld      (hl), 5Fh ; '_'					; Show cursor in next position
+
+no_update:     
+                ld      (ix+3), l
+                ld      (ix+4), h					; Update cursor ptr in DCB
+                ld      a, c						; Get character back before returning
+                ret
+
+return_last_char:  
+                ld      a, (ix+5)
+                or      a
+                ret     nz
+                ld      a, (hl)
+                ret
+; ---------------------------------------------------------------------------
+
+do_LEFT_EDGE: 
+                ld      a, l
+                and	(100h - LINE_LEN)				; C0h for 64/line or E0h for 32/line		; force left edge of current line
+                ld      l, a
+                ret
+; ---------------------------------------------------------------------------
+
+CHECK_GRAPHIC:
+                cp      0C0h
+                jr      c, OUTPUT_CHAR
+                sub     0C0h
+                jr      z, update_VID_DCB_RET
+                ld      b, a
+
+loc_4AF: 
+                ld      a, 20h ; ' '
+                call    console_out
+                djnz    loc_4AF
+                jr      update_VID_DCB_RET
+; ---------------------------------------------------------------------------
+
+CURSOR_ON: 
+                ld      a, (hl)
+
+loc_4B9: 
+                ld      (ix+5), a
+                ret
+; ---------------------------------------------------------------------------
+
+CURSOR_OFF: 
+                xor     a
+                jr      loc_4B9
+; ---------------------------------------------------------------------------
+
+do_HOME_SCREEN:
+                ld      hl, SCREEN_START
+                ret
+; ---------------------------------------------------------------------------
+
+do_backspace: 
+                dec     hl
+                ld      (hl), 20h ; ' '
+                ret
+; ---------------------------------------------------------------------------
+
+do_CURSOR_LEFT:
+                ld      a, l
+                and     (LINE_LEN - 1)					; 3Fh ; '?'
+                dec     hl
+                ret     nz
+
+do_CURSOR_DOWN: 
+                ld      de, LINE_LEN					; 40h ; '@'
+                add     hl, de
+                ret
+
+do_CURSOR_RIGHT:
+                inc     hl
+                ld      a, l
+                and     (LINE_LEN - 1)					; 3Fh ; '?'
+                ret     nz			; if $00 we went past right hand side, so go back to left edge
+
+do_CURSOR_UP:
+                ld      de, (10000h - LINE_LEN)				; FFC0h for 64, FFE0h for 32
+                add     hl, de
+                ret
+; ---------------------------------------------------------------------------
+
+;MODE_32:
+;                ld      a, (VID_STATUS)
+;                or      8
+;                ld      (VID_STATUS), a
+;                out     (0FFh), a
+;                inc     hl
+;                ld      a, l
+;                and     0FEh
+;                ld      l, a
+;                ret
+; ---------------------------------------------------------------------------
+
+PROCESS_CONTROL: 
+                ld      de, update_VID_DCB_RET		; process screen handling, control chars. return via $480
+                push    de
+                cp      8
+                jr      z, do_backspace
+                cp      0Ah
+                ret     c				; return if < 0Ah <LINEFEED>
+                cp      0Eh
+                jr      c, do_CR			; 0A-0D do <CR>
+                jr      z, CURSOR_ON
+                cp      0Fh
+                jr      z, CURSOR_OFF
+                ;cp      17h
+                ;jr      z, MODE_32
+                cp      18h
+                jr      z, do_CURSOR_LEFT
+                cp      19h
+                jr      z, do_CURSOR_RIGHT
+                cp      1Ah
+                jr      z, do_CURSOR_DOWN
+                cp      1Bh
+                jr      z, do_CURSOR_UP
+                cp      1Ch
+                jr      z, do_HOME_SCREEN
+                cp      1Dh
+                jp      z, do_LEFT_EDGE
+                cp      1Eh
+                jr      z, do_RIGHT_EDGE
+                cp      1Fh
+                jr      z, do_CLEAR_EOS ; clear to end of screen from current position
+                ret
+
+
+console_out: 
+                ld      (hl), a					; copy character to screen memory
+                inc     hl
+                ld      a, h
+                cp      SCREEN_OVERFLOW				; 40h ; '@' ; overflowed screen mem? (reached $4000)
+                ret     nz
+                ld      de, (10000h - LINE_LEN)			; FFC0h for 64, FFE0h for 32	; -64.  go back to start of last line
+                add     hl, de
+                push    hl
+
+SCROLL_UP: 
+                ld      de, SCREEN_START			; scroll screen up one line
+                ld      hl, SCREEN_START+LINE_LEN		;SCREEN_START+40h
+                push    bc
+                ld      bc, ((SCREEN_LINES - 1) * LINE_LEN)	; 3C0h	15*64. 1E0h = 15*32, 7C0h = 31*64
+                ldir
+                pop     bc
+                ex      de, hl					; HL now points at first char of last line
+                jr      loc_57D					; ensure last line is clear
+; ---------------------------------------------------------------------------
+
+do_CR: 
+                ld      a, l
+                and     (100h - LINE_LEN)			; C0h for 64/line or E0h for 32/line		; force left edge of current line
+                ld      l, a
+                push    hl
+                ld      de, LINE_LEN				; 40h ; '@'
+                add     hl, de
+                ld      a, h
+                cp      SCREEN_OVERFLOW				; 40h ; '@'       ; Past end of screen yet?
+                jr      z, SCROLL_UP
+                pop     de
+
+do_RIGHT_EDGE:
+                push    hl
+                ld      d, h
+                ld      a, l
+                or      LINE_LEN - 1				; 3Fh ; '?'       ; force column 63
+                ld      e, a
+                inc     de
+                jr      clr_eos_cont
+; ---------------------------------------------------------------------------
+
+do_CLEAR_EOS: 
+                push    hl
+
+loc_57D: 
+                ld      de, RAM_START				; Screen overflow
+
+clr_eos_cont: 
+                ld      (hl), 20h ; ' '
+                inc     hl
+                ld      a, h
+                cp      d               ; Have we run past end of screen? $3FFF
+                jr      nz, clr_eos_cont
+                ld      a, l
+                cp      e
+                jr      nz, clr_eos_cont
+                pop     hl
+                ret
+
+#ENDIF
+;------------------------------------------------------------------------------------------------------
 
 ; =============== S U B R O U T I N E =======================================
 
@@ -5180,11 +5437,22 @@ TAS_PTR_DRIVER:
                 ld      c, a
                 jp      ROM_PRT_DRIVER
 
+; ===============================================================================================
+
 ; DATA Follows
 
-; ---------------------------------------------------------------------------
+#IFNDEF TRS80
+
+L2_VIDEO_DCB:		.db 7			; VZ Keep out own private VIDEO_DCB
+			.dw VID_DRIVER
+NEXT_CHAR_ADD_L2:	.dw SCREEN_START
+			.db 0			; Cursor char, or ZERO for no display.
+			.dw 0			; Work area pointer. Not used by Video DCB? 
+#ENDIF
+
 TasmonVer222:	.DB "TASMON  VER 2.22\n"
-                .DB "(C) 1981 by Bruce G. Hansen"
+                .DB "(C) 1981 - BRUCE G. HANSEN\n"
+                .DB "VZ-LASER PORT - REDSKULLDC"
                 .DB  3
 USER_REGS:			; user register save area
 reg_IX:		.DW  0                    
